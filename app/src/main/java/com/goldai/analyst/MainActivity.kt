@@ -9,7 +9,11 @@ import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.nestedScroll
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -21,7 +25,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -145,30 +148,40 @@ private fun Overview(data: JSONObject?, error: String, refreshing: Boolean, onRe
 
     val scrollState = rememberScrollState()
     var pullDistance by remember { mutableStateOf(0f) }
+    val refreshThreshold = with(androidx.compose.ui.platform.LocalDensity.current) { 72.dp.toPx() }
+
+    val pullToRefreshConnection = remember(scrollState, refreshing, onRefresh, refreshThreshold) {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+                // At the very top, capture a downward pull before the list consumes it.
+                if (scrollState.value == 0 && available.y > 0f && !refreshing) {
+                    pullDistance = (pullDistance + available.y).coerceAtMost(refreshThreshold * 1.5f)
+                    return Offset(0f, available.y)
+                }
+                return Offset.Zero
+            }
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (pullDistance >= refreshThreshold && !refreshing) {
+                    pullDistance = 0f
+                    onRefresh()
+                } else {
+                    pullDistance = 0f
+                }
+                return Velocity.Zero
+            }
+        }
+    }
 
     Column(
         Modifier.fillMaxSize()
-            .pointerInput(scrollState, refreshing) {
-                detectVerticalDragGestures(
-                    onVerticalDrag = { change, dragAmount ->
-                        if (scrollState.value == 0 && dragAmount > 0 && !refreshing) {
-                            pullDistance += dragAmount
-                            change.consume()
-                        }
-                    },
-                    onDragEnd = {
-                        if (pullDistance > 90f && !refreshing) onRefresh()
-                        pullDistance = 0f
-                    },
-                    onDragCancel = { pullDistance = 0f }
-                )
-            }
+            .nestedScroll(pullToRefreshConnection)
             .verticalScroll(scrollState)
             .padding(bottom = 12.dp)
     ) {
         if (refreshing || pullDistance > 0f) {
             Text(
-                if (refreshing) "Обновление анализа…" else "Потяни ещё немного для обновления",
+                if (refreshing) "Обновление анализа…" else "Потяни вниз и отпусти для обновления",
                 color = BLUE, fontSize = 11.sp,
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
             )

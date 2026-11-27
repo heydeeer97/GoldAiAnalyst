@@ -9,6 +9,7 @@ import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -20,6 +21,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -27,6 +29,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.launch
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -54,6 +57,8 @@ private fun GoldApp() {
     var timeframe by remember { mutableStateOf("15m") }
     var data by remember { mutableStateOf<JSONObject?>(null) }
     var error by remember { mutableStateOf("") }
+    var refreshing by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -63,7 +68,7 @@ private fun GoldApp() {
             } catch (_: Exception) {
                 error = "Нет связи с Python Engine. Запусти main.py в Termux."
             }
-            delay(30_000)
+            delay(2_000)
         }
     }
 
@@ -72,7 +77,7 @@ private fun GoldApp() {
             Spacer(Modifier.height(18.dp))
             Text("GOLD AI ANALYST", color = BLUE, fontSize = 13.sp, fontWeight = FontWeight.Bold)
             Text("XAU / USD", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
-            Text("Biquote • Live Gold • Analysis only", color = MUTED, fontSize = 11.sp)
+            Text("Biquote • Live Gold • автообновление 2 сек • свайп вниз вручную", color = MUTED, fontSize = 11.sp)
             Spacer(Modifier.height(16.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf("Обзор", "График", "История").forEach { name ->
@@ -88,7 +93,19 @@ private fun GoldApp() {
             }
             Spacer(Modifier.height(14.dp))
             when (tab) {
-                "Обзор" -> Overview(data, error)
+                "Обзор" -> Overview(data, error, refreshing) {
+                    scope.launch {
+                        refreshing = true
+                        try {
+                            data = getJson("$ENGINE/analysis")
+                            error = ""
+                        } catch (_: Exception) {
+                            error = "Не удалось обновить данные. Проверь Python Engine в Termux."
+                        } finally {
+                            refreshing = false
+                        }
+                    }
+                }
                 "График" -> {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         listOf("15m", "1h").forEach { tf ->
@@ -105,7 +122,7 @@ private fun GoldApp() {
 }
 
 @Composable
-private fun Overview(data: JSONObject?, error: String) {
+private fun Overview(data: JSONObject?, error: String, refreshing: Boolean, onRefresh: () -> Unit) {
     val signal = data?.optString("signal", "WAIT") ?: "WAIT"
     val price = data?.optDouble("price", 0.0) ?: 0.0
     val scores = data?.optJSONObject("scores")
@@ -126,11 +143,36 @@ private fun Overview(data: JSONObject?, error: String) {
         if (value == null || !value.isFinite() || value <= 0.0) "—"
         else "$" + "%.2f".format(value)
 
+    val scrollState = rememberScrollState()
+    var pullDistance by remember { mutableStateOf(0f) }
+
     Column(
         Modifier.fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .pointerInput(scrollState, refreshing) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { change, dragAmount ->
+                        if (scrollState.value == 0 && dragAmount > 0 && !refreshing) {
+                            pullDistance += dragAmount
+                            change.consume()
+                        }
+                    },
+                    onDragEnd = {
+                        if (pullDistance > 90f && !refreshing) onRefresh()
+                        pullDistance = 0f
+                    },
+                    onDragCancel = { pullDistance = 0f }
+                )
+            }
+            .verticalScroll(scrollState)
             .padding(bottom = 12.dp)
     ) {
+        if (refreshing || pullDistance > 0f) {
+            Text(
+                if (refreshing) "Обновление анализа…" else "Потяни ещё немного для обновления",
+                color = BLUE, fontSize = 11.sp,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+            )
+        }
         if (error.isNotEmpty()) PanelCard { Text(error, color = RED) }
 
         PanelCard {
